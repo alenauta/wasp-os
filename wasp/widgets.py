@@ -580,3 +580,66 @@ class ConfirmationView:
             return True
 
         return False
+
+class Gauge:
+    """Gauge widget with an optional label, with configurable size"""
+
+    def __init__(self, x, y, size=30, thickness=6, label=None):
+        self.x = x
+        self.y = y
+        self.s = size
+        self.t = thickness
+        self.label = label
+
+    def draw(self):
+        self.fill()
+
+    def clear(self):
+        draw = wasp.watch.drawable
+        draw.fill(bg=None, x=self.x, y=self.y+(self.s*2), w=self.s*2, h=8)
+        for i in range(225,225+270):
+            draw.polar(self.x+self.s, self.y+self.s, i, self.s-self.t+1, self.s-1, 2, 0x2945)
+
+    def fill(self, amount=0, minimum=0, maximum=100, fill_color=0x27E5):
+        draw = wasp.watch.drawable
+        # line = 2
+            
+        # normalize in the 0-100 range
+        amount = max(min(maximum, amount), minimum)
+        
+        # # draw the contour
+        # for i in range(225,225+270):
+        #     draw.polar(self.x+self.s, self.y+self.s, i, self.s, self.s, line, color)
+        #     draw.polar(self.x+self.s, self.y+self.s, i, self.s-self.t, self.s-self.t, line, color)
+        # draw.polar(self.x+self.s, self.y+self.s, 225, self.s-self.t, self.s, line, color)
+        # draw.polar(self.x+self.s, self.y+self.s, 225+270, self.s-self.t, self.s, line, color)
+
+        # TODO: implement label - value in the middle
+
+        if self.label:
+            draw.string(self.label, self.x, self.y+(self.s*2), (self.s*2))
+
+        # draw value
+        draw.set_font(fonts.dogi16)
+        draw.string(str(amount), self.x+3, self.y+self.s-8, self.s*2)
+
+        # clear
+        # self.clear()
+        
+        
+        # draw minimum value
+        draw.set_font(fonts.dogi8)
+        draw.fill(bg=None, x=self.x, y=self.y+int(self.s*1.9), w=int(self.s*2.1), h=draw.bounding_box(str(minimum))[1])
+        draw.string(str(minimum), self.x+int(self.s*0.285), self.y+int(self.s*1.9))
+        # draw.string(str(minimum), self.x+int((self.s/100)*28.5), self.y+(self.s*2))
+        # draw maximum value
+        # draw.string(str(maximum), self.x+(self.s*2)-int((self.s/100)*28.5), self.y+(self.s*2))
+        draw.string(str(maximum), self.x+self.s+int(self.s*0.715)-(draw.bounding_box(str(maximum))[0]//2), self.y+int(self.s*1.9))
+        
+        perc = int(270/100*(((amount-minimum)/(maximum-minimum))*100))
+        # draw the circle (amount)
+        for i in range(225,225+perc):
+            draw.polar(self.x+self.s, self.y+self.s, i, self.s-self.t+1, self.s-1, 2, fill_color)
+        # fill the rest of the circle
+        for i in range(225+perc,225+270):
+            draw.polar(self.x+self.s, self.y+self.s, i, self.s-self.t+1, self.s-1, 2, 0x2945)
