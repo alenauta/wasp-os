@@ -69,10 +69,19 @@ _IS_ACTIVE = const(0x80)
 _HOUR_IDX = const(0)
 _MIN_IDX = const(1)
 _ENABLED_IDX = const(2)
+_ON_SHIFT = const(3)
+_OFF_SHIFT = const(4)
+
+_START_DATE = const(1)
+
+_DAY = 86400
 
 # Pages
 _HOME_PAGE = const(-1)
 _RINGING_PAGE = const(-2)
+_SHIFT_PAGE = const(-3)
+_SHIFT_PAGE1 = const(-4)
+_SHIFT_PAGE2 = const(-5)
 
 class AlarmApp:
     """Allows the user to set a vibration alarm.
@@ -84,8 +93,9 @@ class AlarmApp:
         """Initialize the application."""
 
         self.page = _HOME_PAGE
-        self.alarms = (bytearray(3), bytearray(3), bytearray(3), bytearray(3))
+        self.alarms = ([bytearray(5), float()], [bytearray(5), float()], [bytearray(5), float()], [bytearray(5), float()])
         self.pending_alarms = array.array('d', [0.0, 0.0, 0.0, 0.0])
+        self.alertidx = 0
 
         self.num_alarms = 0
         try:
@@ -95,10 +105,15 @@ class AlarmApp:
                 alarms.remove("")
             for alarm in alarms:
                 n = self.num_alarms
-                h, m, st = map(int, alarm.split(","))
-                self.alarms[n][0] = h
-                self.alarms[n][1] = m
-                self.alarms[n][2] = st
+                h, m, st, son, soff = map(int, alarm.split(",")[:5])
+                sd = float(alarm.split(",")[5])
+                self.alarms[n][0][0] = h
+                self.alarms[n][0][1] = m
+                self.alarms[n][0][2] = st
+                self.alarms[n][0][3] = son
+                self.alarms[n][0][4] = soff
+                self.alarms[n][_START_DATE] = sd
+                # print(self.alarms[n])
                 self.num_alarms += 1
         except Exception:
             pass
@@ -117,19 +132,33 @@ class AlarmApp:
                          widgets.ToggleButton(190, 145, 40, 35, 'Fr'),
                          widgets.ToggleButton(10, 185, 40, 35, 'Sa'),
                          widgets.ToggleButton(55, 185, 40, 35, 'Su'))
+
+        self.shift_btn = widgets.Button(0, 204, 120, 35, 'Edit shift')
+        self.day_wid = widgets.Spinner(10, 60, 1, 31, 2)
+        self.month_wid = widgets.Spinner(90, 60, 1, 12, 2)
+        self.year_wid = widgets.Spinner(170, 60, 22, 99, 2)
+        self.next1_btn = widgets.Button(170, 204, 70, 35, 'Next')
+        self.prev2_btn = widgets.Button(0, 204, 70, 35, 'Prev')
+        self.done2_btn = widgets.Button(170, 204, 70, 35, 'Save')
+        self.on_shift_wid = widgets.Spinner(30, 60, 1, 31, 2)
+        self.off_shift_wid = widgets.Spinner(150, 60, 1, 31, 2)
+        self.si = wasp.widgets.ScrollIndicator(y=50)
+
         self.alarm_checks = (widgets.Checkbox(200, 57), widgets.Checkbox(200, 102),
                              widgets.Checkbox(200, 147), widgets.Checkbox(200, 192))
 
         self._deactivate_pending_alarms()
         self._draw()
 
-        wasp.system.request_event(wasp.EventMask.TOUCH | wasp.EventMask.SWIPE_LEFTRIGHT | wasp.EventMask.BUTTON)
+        wasp.system.request_event(wasp.EventMask.TOUCH | wasp.EventMask.SWIPE_LEFTRIGHT | wasp.EventMask.SWIPE_UPDOWN | wasp.EventMask.BUTTON)
         wasp.system.request_tick(1000)
 
     def background(self):
         """De-activate the application."""
         if self.page > _HOME_PAGE:
             self._save_alarm()
+        # elif (self.page == _SHIFT_PAGE1) or (self.page == _SHIFT_PAGE2) or (self.page == _SHIFT_PAGE3):
+        #     self._saveshift()
 
         self.page = _HOME_PAGE
 
@@ -139,10 +168,18 @@ class AlarmApp:
         del self.hours_wid
         self.min_wid = None
         del self.min_wid
+        self.day_wid = None
+        del self.day_wid
+        self.month_wid = None
+        del self.month_wid
+        self.year_wid = None
+        del self.year_wid
         self.alarm_checks = None
         del self.alarm_checks
         self.day_btns = None
         del self.day_btns
+        self.shift_btn = None
+        del self.shift_btn
 
         self._set_pending_alarms()
         try:
@@ -151,7 +188,7 @@ class AlarmApp:
             with open("alarms.txt", "w") as f:
                 for n in range(self.num_alarms):
                     al = self.alarms[n]
-                    f.write(",".join(map(str, al)) + ";")
+                    f.write(",".join(map(str, al[0])) + "," + str(al[1]) + ";")
         except Exception:
             pass
 
@@ -173,10 +210,25 @@ class AlarmApp:
         if self.page == _RINGING_PAGE:
             self._snooze()
         elif self.page > _HOME_PAGE:
-            self._save_alarm()
-            self._draw()
-        else:
+            if event[0] == wasp.EventType.UP:
+                self.alertidx = self.page
+                self.page = _SHIFT_PAGE
+                self._draw()
+            else:
+                self._save_alarm()
+                self._draw()
+        elif self.page == _SHIFT_PAGE:
+            if event[0] == wasp.EventType.LEFT or event[0] == wasp.EventType.RIGHT:
+                self._saveshift()
+                self._draw()
+            elif event[0] == wasp.EventType.DOWN:
+                self.page = self.alertidx
+                self._draw()
+        elif self.page == _HOME_PAGE:
             wasp.system.navigate(event[0])
+        else:
+            self.page = _HOME_PAGE
+            self._draw()
 
     def touch(self, event):
         """Notify the application of a touchscreen touch event."""
@@ -190,22 +242,52 @@ class AlarmApp:
                     return
             if self.del_alarm_btn.touch(event):
                 self._remove_alarm(self.page)
+        elif self.page == _SHIFT_PAGE:
+            if self.hours_wid.touch(event) or self.min_wid.touch(event):
+                return
+            if self.del_alarm_btn.touch(event):
+                self._remove_alarm(self.alertidx)
+            if self.shift_btn.touch(event):
+                self.page = _SHIFT_PAGE1
+                self._draw()
+        elif self.page == _SHIFT_PAGE1:
+            if self.day_wid.touch(event) or self.month_wid.touch(event) or self.year_wid.touch(event):
+                return
+            if self.next1_btn.touch(event):
+                self.page = _SHIFT_PAGE2
+                self._draw()
+        elif self.page == _SHIFT_PAGE2:
+            if self.prev2_btn.touch(event):
+                self.page = _SHIFT_PAGE1
+                self._draw()
+            elif self.done2_btn.touch(event):
+                self._saveshift()
+                self.page = _HOME_PAGE
+                self._draw()
+            if self.on_shift_wid.touch(event) or self.off_shift_wid.touch(event):
+                return
         elif self.page == _HOME_PAGE:
             for index, checkbox in enumerate(self.alarm_checks):
                 if index < self.num_alarms and checkbox.touch(event):
                     if checkbox.state:
-                        self.alarms[index][_ENABLED_IDX] |= _IS_ACTIVE
+                        self.alarms[index][0][_ENABLED_IDX] |= _IS_ACTIVE
                     else:
-                        self.alarms[index][_ENABLED_IDX] &= ~_IS_ACTIVE
+                        self.alarms[index][0][_ENABLED_IDX] &= ~_IS_ACTIVE
                     self._draw(index)
                     return
             for index, alarm in enumerate(self.alarms):
                 # Open edit page for clicked alarms
                 if index < self.num_alarms and event[1] < 190 \
                         and 60 + (index * 45) < event[2] < 60 + ((index + 1) * 45):
-                    self.page = index
-                    self._draw()
-                    return
+                    if self.alarms[index][_START_DATE] > 0.0:
+                        self.alertidx = index
+                        self.page = _SHIFT_PAGE
+                        self._draw()
+                        return
+                    else:
+                        self.page = index
+                        self._draw()
+                        return
                 # Add new alarm if plus clicked
                 elif index == self.num_alarms and 60 + (index * 45) < event[2]:
                     self.num_alarms += 1
@@ -215,24 +297,32 @@ class AlarmApp:
     def _remove_alarm(self, alarm_index):
         # Shift alarm indices
         for index in range(alarm_index, 3):
-            self.alarms[index][_HOUR_IDX] = self.alarms[index + 1][_HOUR_IDX]
-            self.alarms[index][_MIN_IDX] = self.alarms[index + 1][_MIN_IDX]
-            self.alarms[index][_ENABLED_IDX] = self.alarms[index + 1][_ENABLED_IDX]
+            self.alarms[index][0][_HOUR_IDX] = self.alarms[index + 1][0][_HOUR_IDX]
+            self.alarms[index][0][_MIN_IDX] = self.alarms[index + 1][0][_MIN_IDX]
+            self.alarms[index][0][_ENABLED_IDX] = self.alarms[index + 1][0][_ENABLED_IDX]
+            self.alarms[index][0][_ON_SHIFT] = self.alarms[index + 1][0][_ON_SHIFT]
+            self.alarms[index][0][_OFF_SHIFT] = self.alarms[index + 1][0][_OFF_SHIFT]
+            self.alarms[index][_START_DATE] = self.alarms[index + 1][_START_DATE]
             self.pending_alarms[index] = self.pending_alarms[index + 1]
 
         # Set last alarm to default
-        self.alarms[3][_HOUR_IDX] = 8
-        self.alarms[3][_MIN_IDX] = 0
-        self.alarms[3][_ENABLED_IDX] = 0
+        self.alarms[3][0][_HOUR_IDX] = 8
+        self.alarms[3][0][_MIN_IDX] = 0
+        self.alarms[3][0][_ENABLED_IDX] = 0
+        self.alarms[3][0][_ON_SHIFT] = 0
+        self.alarms[3][0][_OFF_SHIFT] = 0
+        self.alarms[3][_START_DATE] = 0.0
 
         self.page = _HOME_PAGE
         self.num_alarms -= 1
         self._draw()
 
     def _save_alarm(self):
-        alarm = self.alarms[self.page]
+        alarm = self.alarms[self.page][0]
         alarm[_HOUR_IDX] = self.hours_wid.value
         alarm[_MIN_IDX] = self.min_wid.value
+        # reset the shift start date
+        self.alarms[self.page][_START_DATE] = 0.0
         for day_idx, day_btn in enumerate(self.day_btns):
             if day_btn.state:
                 alarm[_ENABLED_IDX] |= 1 << day_idx
@@ -240,12 +330,33 @@ class AlarmApp:
                 alarm[_ENABLED_IDX] &= ~(1 << day_idx)
 
         self.page = _HOME_PAGE
+    
+    def _saveshift(self):
+        alarm = self.alarms[self.alertidx]
+
+        alarm[0][_HOUR_IDX] = self.hours_wid.value
+        alarm[0][_MIN_IDX] = self.min_wid.value
+        # reset the week days
+        alarm[0][_ENABLED_IDX] = alarm[0][_ENABLED_IDX] & _IS_ACTIVE
+        alarm[_START_DATE] = time.mktime((int("20" + str(self.year_wid.value)), self.month_wid.value, self.day_wid.value,self.hours_wid.value,self.min_wid.value,0,0,0,0))
+        alarm[0][_ON_SHIFT] = self.on_shift_wid.value
+        alarm[0][_OFF_SHIFT] = self.off_shift_wid.value
+
+        # print(alarm)
+        self._set_pending_alarms()
+        self.page = _HOME_PAGE
 
     def _draw(self, update_alarm_row=-1):
         if self.page == _RINGING_PAGE:
             self._draw_ringing_page()
         elif self.page > _HOME_PAGE:
             self._draw_edit_page()
+        elif self.page == _SHIFT_PAGE:
+            self._draw_shift_page()
+        elif self.page == _SHIFT_PAGE1:
+            self._draw_shift_page1()
+        elif self.page == _SHIFT_PAGE2:
+            self._draw_shift_page2()
         else:
             self._draw_home_page(update_alarm_row)
 
@@ -271,17 +382,99 @@ class AlarmApp:
         draw.fill()
         self._draw_system_bar()
 
-        self.hours_wid.value = alarm[_HOUR_IDX]
-        self.min_wid.value = alarm[_MIN_IDX]
+        self.si.up = False
+        self.si.down = True
+        self.si.draw()
+        
+        self.hours_wid.value = alarm[0][_HOUR_IDX]
+        self.min_wid.value = alarm[0][_MIN_IDX]
         draw.set_font(fonts.sans28)
         draw.string(':', 110, 90-14, width=20)
 
         self.del_alarm_btn.draw()
         self.hours_wid.draw()
         self.min_wid.draw()
+
         for day_idx, day_btn in enumerate(self.day_btns):
-            day_btn.state = alarm[_ENABLED_IDX] & (1 << day_idx)
+            day_btn.state = alarm[0][_ENABLED_IDX] & (1 << day_idx)
             day_btn.draw()
+    
+    def _draw_shift_page(self):
+        draw = wasp.watch.drawable
+        alarm = self.alarms[self.alertidx]
+
+        draw.fill()
+        self._draw_system_bar()
+
+        self.si.up = True
+        self.si.down = False
+        self.si.draw()
+        
+        self.hours_wid.value = alarm[0][_HOUR_IDX]
+        self.min_wid.value = alarm[0][_MIN_IDX]
+        draw.set_font(fonts.sans28)
+        draw.string(':', 110, 90-14, width=20)
+
+        self.del_alarm_btn.draw()
+        self.hours_wid.draw()
+        self.min_wid.draw()
+        # if (alarm[_START_DATE] > 0.0):
+        # print("N. {}".format(self.page))
+        # print("alarm: {}".format(alarm))
+        # print("pending: {}".format(self.pending_alarms))
+        nextshift = time.localtime(self.get_next_shift(alarm))
+        # nextshift = time.localtime(self.pending_alarms[self.page])
+        draw.set_font(fonts.sans18)
+        draw.string('Next shift: {}/{}/{}'.format(nextshift[2], nextshift[1] ,nextshift[0]), 0, 160-9, width=240)
+        # print(self.pending_alarms)
+        self.shift_btn.draw()
+    
+    def _draw_shift_page1(self):
+        alarm = self.alarms[self.alertidx]
+        now = wasp.watch.rtc.get_localtime()
+        startdate = time.localtime(alarm[_START_DATE])
+        draw = wasp.watch.drawable
+        draw.fill()
+        self._draw_system_bar()
+
+        if alarm[_START_DATE] > 0.0:
+            self.day_wid.value = startdate[2]
+            self.month_wid.value = startdate[1]
+            self.year_wid.value = startdate[0] % 100
+        else:
+            self.day_wid.value = now[2]
+            self.month_wid.value = now[1]
+            self.year_wid.value = now[0] % 100
+
+        draw.set_font(fonts.sans18)
+        draw.string('Start date:', 0, 60-14, width=240)
+
+        self.day_wid.draw()
+        self.month_wid.draw()
+        self.year_wid.draw()
+
+        self.next1_btn.draw()
+    
+    def _draw_shift_page2(self):
+        alarm = self.alarms[self.alertidx]
+        draw = wasp.watch.drawable
+        draw.fill()
+        self._draw_system_bar()
+
+        if alarm[0][_ON_SHIFT] > 0:
+            self.on_shift_wid.value = alarm[0][_ON_SHIFT]
+            self.off_shift_wid.value = alarm[0][_OFF_SHIFT]
+
+        draw.set_font(fonts.sans18)
+        draw.string('On shift', 0, 60-14, width=120)
+        draw.string('Off shift', 120, 60-14, width=120)
+        draw.line(120, 50, 120, 240-70, width=1, color=wasp.system.theme('bright'))
+
+        self.on_shift_wid.draw()
+        self.off_shift_wid.draw()
+
+        self.prev2_btn.draw()
+        self.done2_btn.draw()
 
     def _draw_home_page(self, update_alarm_row=_HOME_PAGE):
         draw = wasp.watch.drawable
@@ -304,7 +497,7 @@ class AlarmApp:
         draw = wasp.watch.drawable
         alarm = self.alarms[index]
 
-        self.alarm_checks[index].state = alarm[_ENABLED_IDX] & _IS_ACTIVE
+        self.alarm_checks[index].state = alarm[0][_ENABLED_IDX] & _IS_ACTIVE
         self.alarm_checks[index].draw()
 
         if self.alarm_checks[index].state:
@@ -313,10 +506,10 @@ class AlarmApp:
             draw.set_color(wasp.system.theme('mid'))
 
         draw.set_font(fonts.sans28)
-        draw.string("{:02d}:{:02d}".format(alarm[_HOUR_IDX], alarm[_MIN_IDX]), 10, 60 + (index * 45), width=120)
+        draw.string("{:02d}:{:02d}".format(alarm[0][_HOUR_IDX], alarm[0][_MIN_IDX]), 10, 60 + (index * 45), width=120)
 
         draw.set_font(fonts.sans18)
-        draw.string(self._get_repeat_code(alarm[_ENABLED_IDX]), 130, 70 + (index * 45), width=60)
+        draw.string(self._get_repeat_code(alarm[0][_ENABLED_IDX], alarm[_START_DATE]), 130, 70 + (index * 45), width=60)
 
         draw.line(0, 95 + (index * 45), 240, 95 + (index * 45), width=1, color=wasp.system.theme('bright'))
 
@@ -339,28 +532,30 @@ class AlarmApp:
     def _set_pending_alarms(self):
         now = wasp.watch.rtc.get_localtime()
         for index, alarm in enumerate(self.alarms):
-            if index < self.num_alarms and alarm[_ENABLED_IDX] & _IS_ACTIVE:
+            if index < self.num_alarms and alarm[0][_ENABLED_IDX] & _IS_ACTIVE:
                 yyyy = now[0]
                 mm = now[1]
                 dd = now[2]
-                HH = alarm[_HOUR_IDX]
-                MM = alarm[_MIN_IDX]
+                HH = alarm[0][_HOUR_IDX]
+                MM = alarm[0][_MIN_IDX]
 
                 # If next alarm is tomorrow increment the day
                 if HH < now[3] or (HH == now[3] and MM <= now[4]):
                     dd += 1
 
-                pending_time = time.mktime((yyyy, mm, dd, HH, MM, 0, 0, 0, 0))
+                if (alarm[_START_DATE] > 0.0):
+                    pending_time = self.get_next_shift(alarm)
+                else:
+                    pending_time = time.mktime((yyyy, mm, dd, HH, MM, 0, 0, 0, 0))
 
-                # If this is not a one time alarm find the next day of the week that is enabled
-                if alarm[_ENABLED_IDX] & ~_IS_ACTIVE != 0:
-                    for _i in range(7):
-                        if (1 << time.localtime(pending_time)[6]) & alarm[_ENABLED_IDX] == 0:
-                            dd += 1
-                            pending_time = time.mktime((yyyy, mm, dd, HH, MM, 0, 0, 0, 0))
-                        else:
-                            break
-
+                    # If this is not a one time alarm find the next day of the week that is enabled
+                    if alarm[0][_ENABLED_IDX] & ~_IS_ACTIVE != 0:
+                        for _i in range(7):
+                            if (1 << time.localtime(pending_time)[6]) & alarm[0][_ENABLED_IDX] == 0:
+                                dd += 1
+                                pending_time = time.mktime((yyyy, mm, dd, HH, MM, 0, 0, 0, 0))
+                            else:
+                                break
                 self.pending_alarms[index] = pending_time
                 wasp.system.set_alarm(pending_time, self._alert)
             else:
@@ -374,21 +569,54 @@ class AlarmApp:
             if not pending_alarm == 0.0:
                 wasp.system.cancel_alarm(pending_alarm, self._alert)
                 # If this is a one time alarm and in the past disable it
-                if alarm[_ENABLED_IDX] & ~_IS_ACTIVE == 0 and pending_alarm <= now:
-                    alarm[_ENABLED_IDX] = 0
+                if alarm[0][_ENABLED_IDX] & ~_IS_ACTIVE == 0 and pending_alarm <= now:
+                    alarm[0][_ENABLED_IDX] = 0
 
     @staticmethod
-    def _get_repeat_code(days):
-        # Ignore the is_active bit
-        days = days & ~_IS_ACTIVE
+    def get_next_shift(alarm):
+        now = wasp.watch.rtc.get_localtime()
+        yyyy = now[0]
+        mm = now[1]
+        dd = now[2]
+        HH = alarm[0][_HOUR_IDX]
+        MM = alarm[0][_MIN_IDX]
 
-        if days == _WEEKDAYS:
-            return "wkds"
-        elif days == _WEEKENDS:
-            return "wkns"
-        elif days == _EVERY_DAY:
-            return "evry"
-        elif days == 0:
-            return "once"
+        # If next alarm is tomorrow increment the day
+        if HH < now[3] or (HH == now[3] and MM <= now[4]):
+            dd += 1
+        # print("ALARM {} IS SHIFT".format(index))
+        # (1 <= (i%(4+3)) <= 4)
+        shift_cycle = alarm[0][_ON_SHIFT] + alarm[0][_OFF_SHIFT]
+        for i in range(alarm[0][_ON_SHIFT]+alarm[0][_OFF_SHIFT]):
+            nextalarm = time.mktime((yyyy, mm, dd+i, HH, MM, 0, 0, 0, 0))
+            days = int((nextalarm - alarm[_START_DATE]) / 60 / 60 / 24) + 1
+            if (days < 0):
+                return alarm[_START_DATE]
+            # print(time.localtime(nextalarm))
+            # print(nextalarm)
+            # print(time.localtime(alarm[_START_DATE]))
+            # print(alarm[_START_DATE])
+            # print(days)
+            if (1 <= (days%shift_cycle) <= alarm[0][_ON_SHIFT]):
+                # print("NEXT SHIFT: {}".format(time.localtime(nextalarm)))
+                # print("IT WILL BE IN {} DAYS".format(i))
+                return nextalarm
+
+    @staticmethod
+    def _get_repeat_code(days, start_date):
+        if (start_date > 0.0):
+            return "shft"
         else:
-            return "cust"
+            # Ignore the is_active bit
+            days = days & ~_IS_ACTIVE
+
+            if days == _WEEKDAYS:
+                return "wkds"
+            elif days == _WEEKENDS:
+                return "wkns"
+            elif days == _EVERY_DAY:
+                return "evry"
+            elif days == 0:
+                return "once"
+            else:
+                return "cust"
